@@ -24,11 +24,14 @@ jobs:
       run: chmod +x gradlew
 
     - name: Build Debug APK
-      run: ./gradlew assembleGithubDebug --stacktrace
+      run: |
+        ./gradlew assembleGithubDebug --stacktrace
+        echo "--- Searching for generated APK files ---"
+        find . -path "*/build/outputs/*" -type f
 
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
       with:
         name: PlayCar-APK
-        path: "**/build/outputs/apk/**/*.apk"
+        path: "**/*.apk"
         if-no-files-found: warn
