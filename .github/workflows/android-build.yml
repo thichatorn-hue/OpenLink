@@ -1,4 +1,3 @@
-
 name: Build PlayCar APK
 
 on:
@@ -28,6 +27,8 @@ jobs:
         run: ./gradlew clean --no-daemon
 
       - name: Build Debug APK
+        env:
+          DIPLAY_AUTH_ASSETS_DIR: ${{ github.workspace }}/vendor/diplay/offline-mfi
         run: ./gradlew :app:assembleDebug --stacktrace --no-daemon
 
       - name: Search APK files
