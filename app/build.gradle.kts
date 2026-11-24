@@ -52,7 +52,7 @@ androidComponents {
 }
 
 android {
-    namespace = "com.PlayCar.app"
+    namespace = "com.carlink.app"
     compileSdk {
         version = release(37)
     }
