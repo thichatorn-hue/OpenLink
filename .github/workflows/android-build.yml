@@ -25,7 +25,7 @@ jobs:
 
     - name: Build Debug APK
       run: |
-        ./gradlew assembleGithubDebug --stacktrace
+        ./gradlew :app:assembleGithubDebug --stacktrace
         echo "--- Searching for generated APK files ---"
         find . -path "*/build/outputs/*" -type f
 
