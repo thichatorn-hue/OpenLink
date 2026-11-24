@@ -30,4 +30,5 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: PlayCar-APK
-        path: app/build/outputs/apk/github/debug/*.apk
+        path: "**/*.apk"
+        if-no-files-found: warn
