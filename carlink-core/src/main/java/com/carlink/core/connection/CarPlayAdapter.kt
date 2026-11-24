@@ -249,6 +249,18 @@ class CarPlayAdapter internal constructor(
         private const val TAG = "CarLink-CarPlay"
         private const val STOP_TIMEOUT_MILLIS = 20_000L
 
+        internal fun resolveAccessoryName(context: Context): String {
+            val savedModel = runCatching { AirPlayPersistence.loadModel(context) }.getOrNull()
+            if (!savedModel.isNullOrBlank() && savedModel != AirPlayPersistence.DEFAULT_MODEL) {
+                return savedModel
+            }
+            val savedManufacturer = runCatching { AirPlayPersistence.loadManufacturer(context) }.getOrNull()
+            if (!savedManufacturer.isNullOrBlank() && savedManufacturer != AirPlayPersistence.DEFAULT_MANUFACTURER) {
+                return savedManufacturer
+            }
+            return CarLinkCore.config.accessoryName
+        }
+
         /**
          * Installs CarLink's DiPlay hooks; call once from [CarLinkCore.install] in the main
          * process, before any CarPlay session: the car's name for the iPhone (iAP2 and Bonjour,
@@ -257,7 +269,7 @@ class CarPlayAdapter internal constructor(
          */
         fun install(context: Context, profile: VehicleProfile) {
             val app = context.applicationContext
-            CarPlayHostIntegration.accessoryName = "PlayCar"
+            CarPlayHostIntegration.accessoryName = resolveAccessoryName(app)
             CarPlayHostIntegration.resetDebugLogsOnBootstrap = false
             // One Wi-Fi Direct identity per install: the iPhone rejoins a network it saved.
             CarPlayHostIntegration.wifiP2pStableIdentity = true
