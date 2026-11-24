@@ -168,7 +168,7 @@ object CarPlaySettingsPolicy {
         path: WirelessPath?,
         profile: VehicleProfile,
         fineLocationGranted: Boolean,
-        brandName: String = "CarLink",
+        brandName: String = "PlayCar",
         picture: PictureChoice = PicturePolicy.ENGINE_DEFAULTS,
         appearance: CarLinkAppearance = runCatching { this.appearance() }.getOrDefault(CarLinkAppearance.DARK),
         audioStreams: Map<String, Int> = emptyMap(),
