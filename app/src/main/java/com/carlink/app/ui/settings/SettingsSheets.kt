@@ -14,9 +14,9 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -37,9 +37,9 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -52,8 +52,8 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -63,25 +63,25 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.launch
 import com.carlink.app.R
-import com.carlink.core.settings.AudioLevels
-import com.carlink.core.settings.Applies
-import com.carlink.core.settings.AudioDelay
-import com.carlink.core.settings.CarBrand
-import com.carlink.core.settings.VehicleProfile
-import com.carlink.core.settings.ConnectionMethod
-import com.carlink.core.settings.Control
-import com.carlink.core.settings.DayNight
-import com.carlink.core.settings.InterfaceSize
-import com.carlink.core.settings.Picture
-import com.carlink.core.settings.WifiDetails
-import com.carlink.core.settings.isValid
 import com.carlink.app.ui.premium.GlassButton
 import com.carlink.app.ui.premium.IonButton
 import com.carlink.app.ui.theme.CarLinkTokens
 import com.carlink.app.ui.theme.ThemeMode
 import com.carlink.app.ui.theme.UiProfileMode
+import com.carlink.core.settings.Applies
+import com.carlink.core.settings.AudioDelay
+import com.carlink.core.settings.AudioLevels
+import com.carlink.core.settings.CarBrand
+import com.carlink.core.settings.ConnectionMethod
+import com.carlink.core.settings.Control
+import com.carlink.core.settings.DayNight
+import com.carlink.core.settings.InterfaceSize
+import com.carlink.core.settings.Picture
+import com.carlink.core.settings.VehicleProfile
+import com.carlink.core.settings.WifiDetails
+import com.carlink.core.settings.isValid
+import kotlinx.coroutines.launch
 import kotlin.math.max
 import kotlin.math.min
 
@@ -108,8 +108,9 @@ internal fun SettingsSheetHost(key: String?, ui: SettingsUi, actions: SettingsAc
     val u = ui.unified
     val select: ((com.carlink.core.settings.UnifiedSettings) -> com.carlink.core.settings.UnifiedSettings) -> Unit =
         { change -> actions.update(change); onDismiss() }
-    when (SheetKey.essential(key)) {
-        null -> Unit
+    val essentialKey = SheetKey.essential(key) ?: return
+
+    when (essentialKey) {
         EssentialSheet.CONNECTION_METHOD -> ChoiceSheet(
             stringResource(R.string.carlink_settings_method), stringResource(R.string.carlink_settings_method_sheet_body), true,
             ConnectionMethod.entries.map { m ->
@@ -211,24 +212,32 @@ internal fun SettingsSheetHost(key: String?, ui: SettingsUi, actions: SettingsAc
             u.audioDelay, onSelect = { a -> select { it.copy(audioDelay = a) } }, onDismiss = onDismiss,
         )
         EssentialSheet.MEDIA_LEVEL, EssentialSheet.NAVIGATION_LEVEL, EssentialSheet.CALL_LEVEL, EssentialSheet.MIC_GAIN -> {
-            val sheet = SheetKey.essential(key)!!
-            val (title, body, current) = when (sheet) {
-                EssentialSheet.MEDIA_LEVEL -> Triple(R.string.carlink_settings_level_media, R.string.carlink_settings_level_sheet_body, u.mediaLevelDb)
-                EssentialSheet.NAVIGATION_LEVEL ->
-                    Triple(R.string.carlink_settings_level_navigation, R.string.carlink_settings_level_sheet_body, u.navigationLevelDb)
-                EssentialSheet.CALL_LEVEL -> Triple(R.string.carlink_settings_level_calls, R.string.carlink_settings_level_sheet_body, u.callLevelDb)
-                else -> Triple(R.string.carlink_settings_mic_gain, R.string.carlink_settings_mic_gain_sheet_body, u.micGainDb)
+            val titleRes = when (essentialKey) {
+                EssentialSheet.MEDIA_LEVEL -> R.string.carlink_settings_level_media
+                EssentialSheet.NAVIGATION_LEVEL -> R.string.carlink_settings_level_navigation
+                EssentialSheet.CALL_LEVEL -> R.string.carlink_settings_level_calls
+                else -> R.string.carlink_settings_mic_gain
             }
-            val choices = when (sheet) {
+            val bodyRes = when (essentialKey) {
+                EssentialSheet.MIC_GAIN -> R.string.carlink_settings_mic_gain_sheet_body
+                else -> R.string.carlink_settings_level_sheet_body
+            }
+            val currentVal = when (essentialKey) {
+                EssentialSheet.MEDIA_LEVEL -> u.mediaLevelDb
+                EssentialSheet.NAVIGATION_LEVEL -> u.navigationLevelDb
+                EssentialSheet.CALL_LEVEL -> u.callLevelDb
+                else -> u.micGainDb
+            }
+            val choices = when (essentialKey) {
                 EssentialSheet.MIC_GAIN -> AudioLevels.MIC_DB
                 EssentialSheet.NAVIGATION_LEVEL -> AudioLevels.NAVIGATION_DB
                 else -> AudioLevels.PLAYBACK_DB
             }
-            ChoiceSheet(stringResource(title), stringResource(body), true,
-                choices.map { Preset(it, levelLabel(it)) }, current,
+            ChoiceSheet(stringResource(titleRes), stringResource(bodyRes), true,
+                choices.map { Preset(it, levelLabel(it)) }, currentVal,
                 onSelect = { db ->
                     select {
-                        when (sheet) {
+                        when (essentialKey) {
                             EssentialSheet.MEDIA_LEVEL -> it.copy(mediaLevelDb = db)
                             EssentialSheet.NAVIGATION_LEVEL -> it.copy(navigationLevelDb = db)
                             EssentialSheet.CALL_LEVEL -> it.copy(callLevelDb = db)
