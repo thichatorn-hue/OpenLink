@@ -15,8 +15,10 @@ import com.carlink.core.diagnostics.EventLog
 import com.carlink.core.entry.UsbWatcher
 import com.shilapi.xcertplay.AirPlayPersistence
 
+private const val PLAYCAR_DISPLAY_NAME = "PlayCar"
+
 /**
- * What the backend needs from the app that hosts it. CarLink implements it with
+ * What the backend needs from the app that hosts it. PlayCar implements it with
  * `entry/HomeLauncher`; a launcher brings its own main screen forward.
  */
 interface CarLinkHost {
@@ -87,11 +89,16 @@ object CarLinkCore {
      * engine's hooks.
      */
     fun install(app: Application, config: CarLinkConfig) {
-        installed = config
+        val targetName = PLAYCAR_DISPLAY_NAME
+        installed = CarLinkConfig(
+            accessoryName = targetName,
+            host = config.host,
+            waitingView = config.waitingView,
+        )
         // Both processes ask for USB access; each times the attaches itself (UsbAttachTimes).
         com.carlink.core.detect.UsbAttachTimes.watch(app)
         if (isAndroidAutoProcess(app)) {
-            nameCarForPhone(app, config.accessoryName)
+            nameCarForPhone(app, targetName)
             // No sticky or self-restarting engine (DA§10.6.1), no BYD window claim off a BYD
             // (DA§12 #8), engine events and states to the main process.
             AaEngineHooks.install(app)
@@ -104,7 +111,7 @@ object CarLinkCore {
             // Once per app start: what this stereo's Bluetooth is (its own thread; ~300 ms at most
             // for the port check). Its block goes into carlink.log; pre-flight reads it.
             com.carlink.core.detect.ExternalBluetoothProbe.start(app)
-            nameCarForIphone(app, config.accessoryName)
+            nameCarForIphone(app, targetName)
             // The car's name, the vehicle profile's BYD gate, the waiting view (DIPLAY.md §12, F2).
             CarPlayAdapter.install(app, Connection.vehicleProfile(app))
             CarPlayWaitingView.register(config.waitingView)
@@ -139,8 +146,8 @@ object CarLinkCore {
 
     /**
      * The main process's answer to memory pressure (Android 10-13 still deliver every level; 14+
-     * only UI_HIDDEN and BACKGROUND). CarLink's caches are small: the decoder probe goes when
-     * CarLink is in the background and is read again at the next session start. Compose drops its
+     * only UI_HIDDEN and BACKGROUND). PlayCar's caches are small: the decoder probe goes when
+     * PlayCar is in the background and is read again at the next session start. Compose drops its
      * own images and text layouts with the screens; the cached ":aa" process is the system's to
      * reclaim (it holds no service between sessions).
      */
@@ -174,10 +181,12 @@ object CarLinkCore {
      * "DiPlay"). Kept when the driver chose other values in the CarPlay menu.
      */
     private fun nameCarForIphone(app: Application, name: String) {
-        if (AirPlayPersistence.loadManufacturer(app) == AirPlayPersistence.DEFAULT_MANUFACTURER) {
+        if (AirPlayPersistence.loadManufacturer(app) == AirPlayPersistence.DEFAULT_MANUFACTURER ||
+            AirPlayPersistence.loadManufacturer(app).equals("CarLink", ignoreCase = true)) {
             AirPlayPersistence.saveManufacturer(app, name)
         }
-        if (AirPlayPersistence.loadModel(app) == AirPlayPersistence.DEFAULT_MODEL) {
+        if (AirPlayPersistence.loadModel(app) == AirPlayPersistence.DEFAULT_MODEL ||
+            AirPlayPersistence.loadModel(app).equals("CarLink", ignoreCase = true)) {
             AirPlayPersistence.saveModel(app, name)
         }
     }
