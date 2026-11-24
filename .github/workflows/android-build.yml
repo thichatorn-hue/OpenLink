@@ -28,7 +28,7 @@ jobs:
 
       - name: Build Debug APK
         env:
-          DIPLAY_AUTH_ASSETS_DIR: ${{ github.workspace }}/vendor/diplay/offline-mfi
+          DIPLAY_AUTH_ASSETS_DIR: ${{ github.workspace }}
         run: ./gradlew :app:assembleDebug --stacktrace --no-daemon
 
       - name: Search APK files
