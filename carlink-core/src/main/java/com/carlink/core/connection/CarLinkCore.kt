@@ -15,8 +15,6 @@ import com.carlink.core.diagnostics.EventLog
 import com.carlink.core.entry.UsbWatcher
 import com.shilapi.xcertplay.AirPlayPersistence
 
-private const val PLAYCAR_DISPLAY_NAME = "PlayCar"
-
 /**
  * What the backend needs from the app that hosts it. PlayCar implements it with
  * `entry/HomeLauncher`; a launcher brings its own main screen forward.
@@ -89,16 +87,23 @@ object CarLinkCore {
      * engine's hooks.
      */
     fun install(app: Application, config: CarLinkConfig) {
-        val targetName = PLAYCAR_DISPLAY_NAME
+        val persistedModel = runCatching { AirPlayPersistence.loadModel(app) }.getOrNull()
+        val persistedManufacturer = runCatching { AirPlayPersistence.loadManufacturer(app) }.getOrNull()
+        val effectiveName = persistedModel
+            ?.takeIf { it.isNotBlank() && it != AirPlayPersistence.DEFAULT_MODEL }
+            ?: persistedManufacturer
+                ?.takeIf { it.isNotBlank() && it != AirPlayPersistence.DEFAULT_MANUFACTURER }
+            ?: config.accessoryName
+
         installed = CarLinkConfig(
-            accessoryName = targetName,
+            accessoryName = effectiveName,
             host = config.host,
             waitingView = config.waitingView,
         )
         // Both processes ask for USB access; each times the attaches itself (UsbAttachTimes).
         com.carlink.core.detect.UsbAttachTimes.watch(app)
         if (isAndroidAutoProcess(app)) {
-            nameCarForPhone(app, targetName)
+            nameCarForPhone(app, effectiveName)
             // No sticky or self-restarting engine (DA§10.6.1), no BYD window claim off a BYD
             // (DA§12 #8), engine events and states to the main process.
             AaEngineHooks.install(app)
@@ -111,7 +116,7 @@ object CarLinkCore {
             // Once per app start: what this stereo's Bluetooth is (its own thread; ~300 ms at most
             // for the port check). Its block goes into carlink.log; pre-flight reads it.
             com.carlink.core.detect.ExternalBluetoothProbe.start(app)
-            nameCarForIphone(app, targetName)
+            nameCarForIphone(app, config.accessoryName)
             // The car's name, the vehicle profile's BYD gate, the waiting view (DIPLAY.md §12, F2).
             CarPlayAdapter.install(app, Connection.vehicleProfile(app))
             CarPlayWaitingView.register(config.waitingView)
@@ -181,12 +186,10 @@ object CarLinkCore {
      * "DiPlay"). Kept when the driver chose other values in the CarPlay menu.
      */
     private fun nameCarForIphone(app: Application, name: String) {
-        if (AirPlayPersistence.loadManufacturer(app) == AirPlayPersistence.DEFAULT_MANUFACTURER ||
-            AirPlayPersistence.loadManufacturer(app).equals("CarLink", ignoreCase = true)) {
+        if (AirPlayPersistence.loadManufacturer(app) == AirPlayPersistence.DEFAULT_MANUFACTURER) {
             AirPlayPersistence.saveManufacturer(app, name)
         }
-        if (AirPlayPersistence.loadModel(app) == AirPlayPersistence.DEFAULT_MODEL ||
-            AirPlayPersistence.loadModel(app).equals("CarLink", ignoreCase = true)) {
+        if (AirPlayPersistence.loadModel(app) == AirPlayPersistence.DEFAULT_MODEL) {
             AirPlayPersistence.saveModel(app, name)
         }
     }
