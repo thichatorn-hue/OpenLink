@@ -2,6 +2,7 @@ package com.carlink.core.connection
 
 import android.app.Application
 import android.content.Context
+import android.content.SharedPreferences
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -14,15 +15,13 @@ import com.carlink.core.core.PhoneKind
 import com.carlink.core.diagnostics.EventLog
 import com.carlink.core.entry.UsbWatcher
 import com.shilapi.xcertplay.AirPlayPersistence
+import com.shilapi.xcertplay.CarPlayHostIntegration
 
 private const val INITIAL_CAR_NAME = "OpenLink"
 
 interface CarLinkHost {
     enum class OpenReason {
-        BOOT,
-        PHONE,
-        UNPLUGGED,
-        ENGINE_START,
+        BOOT, PHONE, UNPLUGGED, ENGINE_START
     }
 
     fun openHome(context: Context, reason: OpenReason, address: String? = null, kind: PhoneKind? = null, name: String? = null)
@@ -38,21 +37,18 @@ class CarLinkConfig(
 object CarLinkCore {
     @Volatile private var installedApp: Application? = null
     @Volatile private var installedBase: CarLinkConfig? = null
+    private var preferenceChangeListener: SharedPreferences.OnSharedPreferenceChangeListener? = null
 
     val config: CarLinkConfig
         get() {
             val base = installedBase ?: error("CarLinkCore.install(application, config) was not called")
             val app = installedApp ?: return base
             val activeName = resolveConfiguredName(app, INITIAL_CAR_NAME)
-            return if (activeName == base.accessoryName) {
-                base
-            } else {
-                CarLinkConfig(
-                    accessoryName = activeName,
-                    host = base.host,
-                    waitingView = base.waitingView,
-                )
-            }
+            return CarLinkConfig(
+                accessoryName = activeName,
+                host = base.host,
+                waitingView = base.waitingView
+            )
         }
 
     fun resolveConfiguredName(context: Context, fallback: String = INITIAL_CAR_NAME): String {
@@ -76,6 +72,10 @@ object CarLinkCore {
             host = config.host,
             waitingView = config.waitingView,
         )
+
+        // ดักจับเมื่อผู้ใช้กด Save ในหน้า CarPlay Menu เพื่ออัปเดตชื่อทันทีสดๆ
+        setupPreferenceListener(app)
+
         com.carlink.core.detect.UsbAttachTimes.watch(app)
         if (isAndroidAutoProcess(app)) {
             nameCarForPhone(app, initialName)
@@ -93,6 +93,16 @@ object CarLinkCore {
             app.registerComponentCallbacks(MemoryTrimmer)
             deferStartupWork(app)
         }
+    }
+
+    private fun setupPreferenceListener(app: Application) {
+        val prefs = app.getSharedPreferences("airplay_prefs", Context.MODE_PRIVATE)
+        preferenceChangeListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+            val newName = resolveConfiguredName(app, INITIAL_CAR_NAME)
+            CarPlayHostIntegration.accessoryName = newName
+            EventLog.add("CarLink", "CarPlay menu name updated to: $newName")
+        }
+        prefs.registerOnSharedPreferenceChangeListener(preferenceChangeListener)
     }
 
     fun isAndroidAutoProcess(context: Context): Boolean = processName(context).endsWith(AaProtocol.ENGINE_PROCESS_SUFFIX)
