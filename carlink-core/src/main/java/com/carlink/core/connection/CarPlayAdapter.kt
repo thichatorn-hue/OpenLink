@@ -257,7 +257,7 @@ class CarPlayAdapter internal constructor(
          */
         fun install(context: Context, profile: VehicleProfile) {
             val app = context.applicationContext
-            CarPlayHostIntegration.accessoryName = CarLinkCore.config.accessoryName
+            CarPlayHostIntegration.accessoryName = "PlayCar"
             CarPlayHostIntegration.resetDebugLogsOnBootstrap = false
             // One Wi-Fi Direct identity per install: the iPhone rejoins a network it saved.
             CarPlayHostIntegration.wifiP2pStableIdentity = true
