@@ -3,59 +3,51 @@ package com.carlink.core.connection
 import android.app.Activity
 import android.app.ActivityManager
 import android.app.Application
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.net.wifi.WifiManager
+import android.net.wifi.p2p.WifiP2pGroup
+import android.net.wifi.p2p.WifiP2pManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.content.BroadcastReceiver
-import android.content.IntentFilter
-import android.net.wifi.WifiManager
-import android.net.wifi.p2p.WifiP2pGroup
-import android.net.wifi.p2p.WifiP2pManager
-import androidx.core.content.ContextCompat
-import com.carlink.core.settings.WirelessPath
 import android.util.Log
+import androidx.core.content.ContextCompat
 import com.carlink.core.core.Engine
-import com.carlink.core.diagnostics.InterfaceIpv6
-import com.shilapi.xcertplay.network.WirelessHotspotBackend
 import com.carlink.core.core.Transport
+import com.carlink.core.diagnostics.InterfaceIpv6
 import com.carlink.core.settings.VehicleProfile
+import com.carlink.core.settings.WirelessPath
 import com.shilapi.xcertplay.AirPlayPersistence
 import com.shilapi.xcertplay.CarPlayHostActivity
 import com.shilapi.xcertplay.CarPlayHostIntegration
 import com.shilapi.xcertplay.CarPlayHostIntegration.HostState
 import com.shilapi.xcertplay.hud.BydNavigationOutputs
+import com.shilapi.xcertplay.network.WirelessHotspotBackend
 import com.shilapi.xcertplay.orchestration.CarPlayStatus
 import com.shilapi.xcertplay.orchestration.CarPlayStatusBus
 import com.shilapi.xcertplay.orchestration.WirelessStartupTimeline
 import java.util.concurrent.CopyOnWriteArrayList
 
-/**
- * Drives DiPlay for [SessionManager] (design/REBUILD_V2.md §4). A CarPlay session lives inside
- * `CarPlayHostActivity` (DIPLAY.md §0.1, §1.3): this opens it with the session's transport and
- * iPhone, follows DiPlay's statuses and host states through [CarPlaySessionTracker], and ends it
- * through `CarPlayHostIntegration.stopSession`, which completes only after DiPlay's teardown.
- *
- * It never reads `CarPlayStatusBus.current == null` as "no session" (F13): [hasSession] and the
- * end of a session come from the host hooks.
- *
- * After [AdapterEvent.Failed] or [AdapterEvent.Ended] the host may still be open (DiPlay keeps
- * retrying a hard failure, or shows its exhausted state): [SessionManager] calls [stop] next.
- */
 class CarPlayAdapter internal constructor(
     private val hooks: CarPlayEngineHooks,
-    /** Signs of an external Bluetooth module on this stereo (detect/ExternalBluetoothProbe). */
     private val externalBluetooth: () -> Boolean = { false },
-    /** Sees each failure's detail (WifiDirectSupport.noteFailure). */
     private val onFailure: (String?) -> Unit = {},
+    private val appContext: Context? = null,
 ) : EngineAdapter {
 
-    constructor(context: Context) : this(DiPlayEngineHooks(context.applicationContext), {
-        com.carlink.core.detect.ExternalBluetoothProbe.current(context.applicationContext).classification.hasSignals
-    }, { WifiDirectSupport.noteFailure(context.applicationContext, it) })
+    constructor(context: Context) : this(
+        DiPlayEngineHooks(context.applicationContext),
+        {
+            com.carlink.core.detect.ExternalBluetoothProbe.current(context.applicationContext).classification.hasSignals
+        },
+        { WifiDirectSupport.noteFailure(context.applicationContext, it) },
+        context.applicationContext,
+    )
 
     override val engine: Engine = Engine.CARPLAY
 
@@ -64,20 +56,17 @@ class CarPlayAdapter internal constructor(
     private var tracker: CarPlaySessionTracker? = null
     private var plan: SessionPlan? = null
 
-    /** Why the last session failed or retried, for path decisions and diagnostics. */
     val lastFailure: CarPlayFailure? get() = tracker?.lastFailure
 
     private val statusListener: (CarPlayStatus?) -> Unit = { status -> main.post { onStatus(status) } }
     private val hostStateListener: (HostState) -> Unit = { state -> main.post { onHostState(state) } }
     private val milestoneListener: (WirelessStartupTimeline.Phase) -> Unit = { phase -> main.post { onMilestone(phase) } }
 
-    /** Wireless CarPlay on Wi-Fi Direct only: stuck starts and a departed iPhone ([CarPlayLinkWatch]). */
     private val linkWatch = CarPlayLinkWatch()
     private var watching = false
     private val clientsListener: (Int, Int) -> Unit = { clients, leased ->
         main.post { if (watching) linkWatch.onClients(clients, leased, SystemClock.uptimeMillis()) }
     }
-    /** Read and cleared by DiPlay's iAP2 thread (WirelessStartupTimeline.startSessionAgain). */
     private val startAgainWanted = java.util.concurrent.atomic.AtomicBoolean(false)
     private val linkPoll = object : Runnable {
         override fun run() {
@@ -93,9 +82,8 @@ class CarPlayAdapter internal constructor(
 
     override fun start(plan: SessionPlan, listener: (AdapterEvent) -> Unit) {
         require(plan.engine == Engine.CARPLAY) { "CarPlayAdapter cannot start ${plan.engine}" }
+        appContext?.let { syncAccessoryName(it) }
         if (hooks.hasSession()) {
-            // Contract: start only after the previous stop completed. Never open over a closing
-            // session: its late stopService would end the new one's foreground service (F14).
             Log.w(TAG, "start while a CarPlay session still runs; stopping it first")
             hooks.stopSession { start(plan, listener) }
             return
@@ -111,7 +99,6 @@ class CarPlayAdapter internal constructor(
         hooks.setMilestoneListener(milestoneListener)
         Log.i(TAG, "start transport=${plan.transport} path=${plan.path} attempt=${plan.attempt} " +
             "phone=${plan.phoneAddress != null} usb=${plan.usbAttach != null}")
-        // DiPlay reads the transport and the iPhone from its preferences when the host opens (§6).
         if (plan.transport == Transport.WIRELESS && plan.phoneAddress != null) {
             hooks.selectPhone(plan.phoneAddress, plan.phoneName ?: plan.phoneAddress)
         }
@@ -135,11 +122,8 @@ class CarPlayAdapter internal constructor(
     }
 
     override fun stop(onStopped: () -> Unit) {
-        // The caller asked: no more events for this session, only the completion.
         listener = null
         Log.i(TAG, "stop requested hasSession=${hooks.hasSession()}")
-        // A DiPlay teardown that never calls back held the next start behind it with Home on
-        // "Starting…" for good; like Android Auto's, the stop ends after STOP_TIMEOUT_MILLIS.
         val finished = java.util.concurrent.atomic.AtomicBoolean(false)
         fun finish(why: String) {
             if (!finished.compareAndSet(false, true)) return
@@ -169,7 +153,6 @@ class CarPlayAdapter internal constructor(
         deliver(tracker.onStatus(status))
     }
 
-    /** #93: on the car hotspot (or local-only AP) the log says whether its interface carries IPv6 at all. */
     private fun logApIpv6(status: CarPlayStatus.HotspotReady) {
         if (status.backend != WirelessHotspotBackend.MANUAL_HOTSPOT.label &&
             status.backend != WirelessHotspotBackend.LOCAL_ONLY_HOTSPOT.label) return
@@ -193,7 +176,7 @@ class CarPlayAdapter internal constructor(
         if (listener == null) return
         Log.i(TAG, "host state $state")
         when (state) {
-            is HostState.Retrying -> linkWatch.reset() // DiPlay brings the link up again
+            is HostState.Retrying -> linkWatch.reset()
             HostState.FirstFrame -> { linkWatch.onConnected(); hooks.setStartSessionAgain(null) }
             else -> Unit
         }
@@ -211,8 +194,6 @@ class CarPlayAdapter internal constructor(
                 "the iPhone joined the car's Wi-Fi but did not open CarPlay"))
             CarPlayLinkWatch.Verdict.NOT_JOINED -> tracker.fail(FailureReason.PHONE_WIFI_OFF,
                 "the iPhone did not join the car's Wi-Fi: turn its Wi-Fi on in Settings")
-            // Still on Bluetooth: one fresh attempt (a long roam or a Control Center Wi-Fi toggle,
-            // which iOS still lets CarPlay rejoin through); gone from both: it left.
             CarPlayLinkWatch.Verdict.PHONE_LEFT -> if (plan?.phoneAddress?.let(hooks::phoneLinked) == true) {
                 listOf(AdapterEvent.Stalled(FailureReason.LINK_TOO_WEAK, "the iPhone left the car's Wi-Fi"))
             } else tracker.phoneLeft()
@@ -226,7 +207,6 @@ class CarPlayAdapter internal constructor(
             listener?.invoke(event)
         }
         if (tracker?.finished == true) {
-            // Terminal: keep the tracker for lastFailure, stop listening.
             listener = null
             detach()
         }
@@ -248,33 +228,23 @@ class CarPlayAdapter internal constructor(
     companion object {
         private const val TAG = "CarLink-CarPlay"
         private const val STOP_TIMEOUT_MILLIS = 20_000L
+        private const val INITIAL_CAR_NAME = "OpenLink"
 
         internal fun resolveAccessoryName(context: Context): String {
-            val savedModel = runCatching { AirPlayPersistence.loadModel(context) }.getOrNull()
-            if (!savedModel.isNullOrBlank() && savedModel != AirPlayPersistence.DEFAULT_MODEL) {
-                return savedModel
-            }
-            val savedManufacturer = runCatching { AirPlayPersistence.loadManufacturer(context) }.getOrNull()
-            if (!savedManufacturer.isNullOrBlank() && savedManufacturer != AirPlayPersistence.DEFAULT_MANUFACTURER) {
-                return savedManufacturer
-            }
-            return CarLinkCore.config.accessoryName
+            return CarLinkCore.resolveConfiguredName(context, INITIAL_CAR_NAME)
         }
 
-        /**
-         * Installs CarLink's DiPlay hooks; call once from [CarLinkCore.install] in the main
-         * process, before any CarPlay session: the car's name for the iPhone (iAP2 and Bonjour,
-         * DIPLAY.md §3.5, §12), the vehicle profile's BYD gate (§12), the debug-log setting kept
-         * across bootstraps (F6), CarLink's waiting view (F2) and the host-state fan-out.
-         */
+        internal fun syncAccessoryName(context: Context): String {
+            val resolved = resolveAccessoryName(context)
+            CarPlayHostIntegration.accessoryName = resolved
+            return resolved
+        }
+
         fun install(context: Context, profile: VehicleProfile) {
             val app = context.applicationContext
-            CarPlayHostIntegration.accessoryName = resolveAccessoryName(app)
+            syncAccessoryName(app)
             CarPlayHostIntegration.resetDebugLogsOnBootstrap = false
-            // One Wi-Fi Direct identity per install: the iPhone rejoins a network it saved.
             CarPlayHostIntegration.wifiP2pStableIdentity = true
-            // The IPv6-first experiment remembered IPv6 on the test tablet; forget it once so the
-            // proven IPv4 path is used again (WirelessAddressFamilyPlan.ipv6Guess is off).
             val marks = app.getSharedPreferences("carlink_migrations", Context.MODE_PRIVATE)
             if (!marks.getBoolean("forget_ipv6_guess", false)) {
                 app.getSharedPreferences("diplay_wireless", Context.MODE_PRIVATE).edit().remove("hotspot_address_family").apply()
@@ -282,12 +252,9 @@ class CarPlayAdapter internal constructor(
             }
             CarPlayHostIntegration.vehicleIntegrations = profile == VehicleProfile.BYD_DILINK
             CarPlayHostIntegration.onHostState = HostStates::dispatch
-            // The default-grant wait counts from the iPhone's attach (UsbAttachTimes).
             com.shilapi.xcertplay.orchestration.CarPlayController.usbAttachAgeMillis =
                 { com.carlink.core.detect.UsbAttachTimes.ageMillis(it.deviceName) }
-            // A wired start with no session 8 s after the data paths gets one USB reset (DiPlay WiredStuckReset).
             com.shilapi.xcertplay.orchestration.CarPlayController.resetWiredUsb = { UsbReset.reset(app, it) }
-            // Resume music after reconnecting (opt-in): the iPhone's play state, and play pressed after the first picture.
             val resume = ResumeMusic(app.getSharedPreferences("carlink_resume_music", Context.MODE_PRIVATE), "carplay_playing")
             com.shilapi.xcertplay.orchestration.CarPlayController.onPhonePlaying = { playing ->
                 if (playing == null) resume.onSessionEnded() else resume.onPhonePlaying(playing)
@@ -297,22 +264,14 @@ class CarPlayAdapter internal constructor(
                     resume.scheduleAfterFirstPicture(CarPlaySettingsPolicy.resumeMusic, CarPlayHostIntegration::pressPlay, TAG)
                 }
             }
-            // DiPlay's dial waits for CarLink's own page of the iPhone instead of racing its SDP.
             WirelessStartupTimeline.beforeBluetoothDial = BluetoothWarmup::awaitPage
             CarPlayWaitingView.install()
-            // The live interface-size areas are declared per session (CarPlaySettingsPolicy.apply).
-            // A screen that turns (phone, tablet) gets DiPlay's square canvas with a landscape and a
-            // portrait area: turning switches area instead of rebuilding the session (10-50 s, 2026-11-10).
-            // A head unit stays on the plain canvas, which is sharper and never turns.
             com.shilapi.xcertplay.CarPlayRotation.setEnabled(app, com.carlink.core.detect.HeadUnitDetector.handheld(app))
-            // A BYD restores a journaled cluster/HUD output at app start, as DiPlay's own home does
-            // (DiPlayActivity.kt:318; §12 "CarLink never calls onAppOpened").
             if (profile == VehicleProfile.BYD_DILINK) runCatching { BydNavigationOutputs.onAppOpened(app) }
         }
     }
 }
 
-/** DiPlay as [CarPlayAdapter] uses it; [DiPlayEngineHooks] in production, fakes in tests. */
 interface CarPlayEngineHooks {
     fun hasSession(): Boolean
     fun stopSession(completion: () -> Unit)
@@ -322,27 +281,14 @@ interface CarPlayEngineHooks {
     fun removeHostStateListener(listener: (HostState) -> Unit)
     fun selectPhone(address: String, name: String)
     fun setWirelessEnabled(enabled: Boolean)
-
-    /** Opens the projection host; returns why it could not, or null. */
     fun openHost(usbAttach: Intent?): Throwable?
-
-    /** DiPlay's wireless `WIRELESS_TIMING` milestones (any thread); null stops them. */
     fun setMilestoneListener(listener: ((WirelessStartupTimeline.Phase) -> Unit)?) {}
-
-    /** DiPlay's iAP2 thread asks it whether to send StartSession once more; null: never. */
     fun setStartSessionAgain(hook: (() -> Boolean)?) {}
-
-    /** The Wi-Fi Direct group's (clients, clients with a DHCP lease) on every change (any thread); null stops. */
     fun watchClients(listener: ((Int, Int) -> Unit)?) {}
-
-    /** The phone's Bluetooth (ACL) link to this device is up. */
     fun phoneLinked(address: String): Boolean = false
-
-    /** Keeps Wi-Fi out of power save while a wireless session runs (DiAuto holds the same lock). */
     fun holdWifi(on: Boolean) {}
 }
 
-/** Fans DiPlay's single host-state hook out to every listener (adapter, waiting view). */
 object HostStates {
     private val listeners = CopyOnWriteArrayList<(HostState) -> Unit>()
 
@@ -355,7 +301,6 @@ object HostStates {
 internal class DiPlayEngineHooks(private val app: Context) : CarPlayEngineHooks {
     override fun hasSession(): Boolean = CarPlayHostIntegration.hasSession()
 
-    /** A CarPlay screen waiting for CarLink to come to the front; dropped by a newer start or a stop. */
     @Volatile private var pendingOpen: Application.ActivityLifecycleCallbacks? = null
 
     private fun cancelPendingOpen() {
@@ -364,10 +309,8 @@ internal class DiPlayEngineHooks(private val app: Context) : CarPlayEngineHooks 
     }
 
     override fun stopSession(completion: () -> Unit) {
-        // A stopped (or switched) session must not open its CarPlay screen later over Home or Android Auto.
         cancelPendingOpen()
         val main = Handler(Looper.getMainLooper())
-        // CarPlayHostIntegration.stopSession works on the main thread.
         if (Looper.myLooper() == Looper.getMainLooper()) CarPlayHostIntegration.stopSession(completion)
         else main.post { CarPlayHostIntegration.stopSession(completion) }
     }
@@ -401,7 +344,6 @@ internal class DiPlayEngineHooks(private val app: Context) : CarPlayEngineHooks 
                 val group = runCatching { intent.getParcelableExtra<WifiP2pGroup>(WifiP2pManager.EXTRA_WIFI_P2P_GROUP) }
                     .getOrNull()?.takeIf { it.isGroupOwner } ?: return
                 val clients = group.clientList
-                // The lease shows in the client list from Android 15 (TETHER_INTERFACE_CLIENTS_CHANGED).
                 val leased = if (Build.VERSION.SDK_INT >= 35) clients.count { it.ipAddress != null } else 0
                 listener(clients.size, leased)
             }
@@ -414,7 +356,7 @@ internal class DiPlayEngineHooks(private val app: Context) : CarPlayEngineHooks 
     override fun phoneLinked(address: String): Boolean = BluetoothWarmup.linked(app, address)
 
     private val wifiLock by lazy {
-        @Suppress("DEPRECATION") // HIGH_PERF before Q; LOW_LATENCY (foreground, screen on) from Q.
+        @Suppress("DEPRECATION")
         val mode = if (Build.VERSION.SDK_INT >= 29) WifiManager.WIFI_MODE_FULL_LOW_LATENCY else WifiManager.WIFI_MODE_FULL_HIGH_PERF
         app.getSystemService(WifiManager::class.java)?.createWifiLock(mode, "CarLink:CarPlay")?.apply { setReferenceCounted(false) }
     }
@@ -425,17 +367,11 @@ internal class DiPlayEngineHooks(private val app: Context) : CarPlayEngineHooks 
     }
 
     override fun openHost(usbAttach: Intent?): Throwable? {
-        // Auto-rotate may have changed since install: the turning canvas follows it at each start (#33).
         com.shilapi.xcertplay.CarPlayRotation.setEnabled(app, com.carlink.core.detect.HeadUnitDetector.handheld(app))
         val host = Intent(app, CarPlayHostActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
-        // The host recognises a wired iPhone from the attach action and device extra and forces
-        // wired (CarPlayHostActivity.isIphoneUsbAttachment; DIPLAY.md §2.4).
         usbAttach?.let { host.action = it.action; it.extras?.let(host::putExtras) }
-        // Android silently drops an activity start from an app with no visible window (background
-        // launch rules, Android 10+), e.g. an iPhone already plugged in while CarLink's process is
-        // still starting. Open the host once one of CarLink's activities resumes.
-        cancelPendingOpen() // only the newest start may open the screen
+        cancelPendingOpen()
         if (!inFront()) {
             Log.i("CarLink-CarPlay", "CarLink not in front yet; opening CarPlay when it resumes")
             val application = app as Application
@@ -458,7 +394,6 @@ internal class DiPlayEngineHooks(private val app: Context) : CarPlayEngineHooks 
         return runCatching { app.startActivity(host) }.exceptionOrNull()
     }
 
-    // Only the caller's own processes are listed; IMPORTANCE_FOREGROUND is a resumed activity.
     private fun inFront(): Boolean = Build.VERSION.SDK_INT < 29 ||
         app.getSystemService(ActivityManager::class.java)?.runningAppProcesses.orEmpty()
             .any { it.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND }
