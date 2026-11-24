@@ -23,12 +23,12 @@ jobs:
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
 
-    - name: Build Debug APK
-      run: ./gradlew assembleGithubDebug --stacktrace
+    - name: Build All Debug APKs
+      run: ./gradlew :app:assembleDebug --stacktrace
 
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
       with:
         name: PlayCar-APK
-        path: "**/*.apk"
+        path: "app/build/outputs/apk/**/*.apk"
         if-no-files-found: warn
